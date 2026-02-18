@@ -26,19 +26,15 @@ async function main() {
 
   console.log('Waiting for game canvas...');
   await page.waitForSelector('#gameCanvas');
-  // Wait for game.js to fully execute and game globals to be available
   await page.waitForFunction(() => typeof game !== 'undefined' && typeof update === 'function', {
     timeout: 15000,
   });
-  // Small extra delay for image assets
   await new Promise(r => setTimeout(r, 1500));
 
-  // Forward browser console to Node.js terminal
+  // Forward bot console messages
   page.on('console', msg => {
     const text = msg.text();
-    if (text.includes('[BOT')) {
-      console.log(text);
-    }
+    if (text.includes('[BOT')) console.log(text);
   });
 
   console.log('Injecting bot...');
@@ -48,12 +44,30 @@ async function main() {
   console.log('Bot is running! Watch the browser window.');
   console.log('Press Ctrl+C to stop.');
 
-  // Keep the process alive; clean exit on SIGINT
+  // Poll for win state — take screenshot and exit
+  const pollWin = setInterval(async () => {
+    try {
+      const won = await page.evaluate(() => window.__botWon);
+      if (won) {
+        clearInterval(pollWin);
+        const path = join(__dirname, '..', 'win-screenshot.png');
+        await new Promise(r => setTimeout(r, 2000)); // let win animation play
+        await page.screenshot({ path, fullPage: false });
+        console.log(`\n[BOT] Screenshot saved to ${path}`);
+        console.log('[BOT] GG! Closing browser...');
+        await browser.close();
+        process.exit(0);
+      }
+    } catch (_) {}
+  }, 1000);
+
   process.on('SIGINT', async () => {
+    clearInterval(pollWin);
     console.log('\nStopping bot...');
     await browser.close();
     process.exit(0);
   });
+
   await new Promise(() => {});
 }
 

@@ -1,22 +1,17 @@
 // ============================================================
-// BRAINROT BOT v2 - Survival-focused AI
+// BRAINROT BOT v3 — Win the game
 // ============================================================
 (() => {
   'use strict';
 
-  // --- Game constants ---
   const BOT_GRAVITY = 0.28;
   const BOT_GROUND_H = 40;
 
-  // --- Tuning ---
-  const PREDICT_FRAMES = 100;       // how far ahead to predict for targeting
-  const DANGER_LOOKAHEAD = 35;      // how far ahead to look for threats
-  const SHOOT_TOLERANCE = 24;       // px: how close to target x to fire
-  const DANGER_THRESHOLD = 0.3;     // lower = dodge sooner
-  const SAFETY_MARGIN = 10;         // extra px margin on danger zones
-  const CROWDED_BALL_COUNT = 7;     // this many balls = survival mode
+  const PREDICT_FRAMES = 100;
+  const DANGER_LOOKAHEAD = 40;
+  const SHOOT_TOLERANCE = 24;
+  const SAFETY_MARGIN = 12;
 
-  // Upgrade priority: always extra ammo first
   const UPGRADE_PRIORITY = [
     'extraAmmo',
     'moveSpeed',
@@ -26,7 +21,6 @@
     'extraLife',
   ];
 
-  // --- State ---
   let menuCooldown = 0;
   let charSelectPhase = 0;
   let frameCount = 0;
@@ -55,7 +49,6 @@
       if (by - br < 0) { by = br; bvy = Math.abs(bvy); }
       if (by + br > groundY) { by = groundY - br; bvy = bounceVy; }
 
-      // Block collisions
       for (let bi = 0; bi < blocks.length; bi++) {
         const bl = blocks[bi];
         const nx = Math.max(bl.x, Math.min(bl.x + bl.w, bx));
@@ -68,11 +61,8 @@
           by += (dy / dist) * (br - dist);
           const overlapX = br - Math.abs(bx - (bl.x + bl.w / 2)) + bl.w / 2;
           const overlapY = br - Math.abs(by - (bl.y + bl.h / 2)) + bl.h / 2;
-          if (overlapX < overlapY) {
-            bvx = -bvx;
-          } else {
-            bvy = by < bl.y ? bounceVy : Math.abs(bvy);
-          }
+          if (overlapX < overlapY) { bvx = -bvx; }
+          else { bvy = by < bl.y ? bounceVy : Math.abs(bvy); }
         }
       }
 
@@ -82,83 +72,66 @@
   }
 
   // ============================================================
-  // THREAT ASSESSMENT — builds danger zones from predicted balls
+  // THREAT ASSESSMENT
   // ============================================================
   function buildDangerZones() {
     const sc = SCALE;
     const groundY = H - BOT_GROUND_H * sc;
     const pw = player.w * sc / 2;
-    const ph = player.h * sc;
-    const playerTop = groundY - ph;
+    const playerTop = groundY - player.h * sc;
     const zones = [];
 
     for (let i = 0; i < balls.length; i++) {
       const b = balls[i];
       const trajectory = predictBall(b, DANGER_LOOKAHEAD, game.blocks, sc);
-
-      // Current position + future positions
       const check = [{ x: b.x, y: b.y, frame: 0 }];
       for (let k = 0; k < trajectory.length; k++) check.push(trajectory[k]);
 
       for (let j = 0; j < check.length; j++) {
         const pos = check[j];
-        // Ball overlaps player height band?
         if (pos.y + b.r >= playerTop - SAFETY_MARGIN && pos.y - b.r <= groundY) {
-          // Severity: closer in time = more dangerous, bigger ball = more dangerous
           const timeFactor = 1 / (pos.frame + 1);
-          const sizeFactor = 1 + (3 - b.tier) * 0.3; // bigger balls more dangerous
-          const severity = timeFactor * sizeFactor;
+          const sizeFactor = 1 + (3 - b.tier) * 0.3;
           zones.push({
             xMin: pos.x - b.r - pw - SAFETY_MARGIN,
             xMax: pos.x + b.r + pw + SAFETY_MARGIN,
-            severity,
+            severity: timeFactor * sizeFactor,
             frame: pos.frame,
           });
         }
       }
     }
-
     return zones;
   }
 
-  // Total danger at position x, optionally filtered by max frame
   function dangerAt(x, zones, maxFrame) {
     let total = 0;
     const limit = maxFrame !== undefined ? maxFrame : 9999;
     for (let i = 0; i < zones.length; i++) {
       const z = zones[i];
-      if (z.frame <= limit && x >= z.xMin && x <= z.xMax) {
-        total += z.severity;
-      }
+      if (z.frame <= limit && x >= z.xMin && x <= z.xMax) total += z.severity;
     }
     return total;
   }
 
-  // ============================================================
-  // DIRECT COLLISION CHECK — is a ball about to hit us RIGHT NOW?
-  // ============================================================
+  // Is a ball overlapping our hitbox RIGHT NOW (with safety margin)?
   function isInImmediateDanger() {
     const sc = SCALE;
     const pw = player.w * sc / 2;
     const ph = player.h * sc / 2;
-
     for (let i = 0; i < balls.length; i++) {
       const b = balls[i];
-      // Same collision as game uses: nearest point on player AABB to ball center
       const cx = Math.max(player.x - pw, Math.min(player.x + pw, b.x));
       const cy = Math.max(player.y - ph, Math.min(player.y + ph, b.y));
       const dx = b.x - cx, dy = b.y - cy;
-      const distSq = dx * dx + dy * dy;
-      const hitDist = b.r + SAFETY_MARGIN; // extra margin
-      if (distSq < hitDist * hitDist) {
-        return true;
-      }
+      const hitDist = b.r + SAFETY_MARGIN;
+      if (dx * dx + dy * dy < hitDist * hitDist) return true;
     }
     return false;
   }
 
   // ============================================================
-  // SAFE POSITION FINDER — where should we dodge to?
+  // SAFE POSITION FINDER
   // ============================================================
   function findSafestPosition(currentX, zones, blocks, urgent) {
     const sc = SCALE;
@@ -169,15 +142,12 @@
     let bestX = currentX;
     let bestSafety = -Infinity;
 
-    const step = 10;
-    for (let x = pw + 5; x < W - pw - 5; x += step) {
-      // Skip if inside a terrain block
+    for (let x = pw + 5; x < W - pw - 5; x += 10) {
       let blocked = false;
       for (let bi = 0; bi < blocks.length; bi++) {
         const bl = blocks[bi];
         if (pBot > bl.y && pTop < bl.y + bl.h && x + pw > bl.x && x - pw < bl.x + bl.w) {
-          blocked = true;
-          break;
+          blocked = true; break;
         }
       }
       if (blocked) continue;
@@ -186,37 +156,62 @@
       for (let i = 0; i < zones.length; i++) {
         const z = zones[i];
         if (x >= z.xMin && x <= z.xMax) {
-          // Immediate threats weighted much heavier
-          const timeWeight = z.frame <= 5 ? 40 : z.frame <= 12 ? 25 : 10;
-          safety -= z.severity * timeWeight;
+          const tw = z.frame <= 5 ? 50 : z.frame <= 12 ? 30 : 12;
+          safety -= z.severity * tw;
         } else {
-          // Reward being far from danger
           const dist = Math.min(Math.abs(x - z.xMin), Math.abs(x - z.xMax));
           safety += Math.min(dist / 80, 1.5) * 0.3;
         }
       }
-
-      // When urgent, strongly prefer nearby positions (faster to reach)
-      const distPenalty = urgent ? 0.02 : 0.006;
-      safety -= Math.abs(x - currentX) * distPenalty;
-
-      // Slight center preference (more escape routes)
+      safety -= Math.abs(x - currentX) * (urgent ? 0.025 : 0.006);
       safety -= Math.abs(x - W / 2) * 0.0005;
 
-      if (safety > bestSafety) {
-        bestSafety = safety;
-        bestX = x;
-      }
+      if (safety > bestSafety) { bestSafety = safety; bestX = x; }
     }
-
     return bestX;
   }
 
   // ============================================================
-  // SPLIT SAFETY — will shooting this ball kill us?
+  // POWERUP TARGETING — shield & slow are survival gold
+  // ============================================================
+  function findBestPowerup(dangerZones) {
+    if (powerups.length === 0) return null;
+    const sc = SCALE;
+    const groundY = H - BOT_GROUND_H * sc;
+
+    let best = null;
+    let bestScore = -Infinity;
+
+    for (let i = 0; i < powerups.length; i++) {
+      const p = powerups[i];
+      // Only go for powerups near ground level (reachable)
+      if (p.y < groundY - 80 * sc) continue;
+      if (p.y > groundY + 20 * sc) continue;
+
+      const dist = Math.abs(p.x - player.x);
+      const danger = dangerAt(p.x, dangerZones, 15);
+
+      let score = 0;
+      // Shield is amazing
+      if (p.type === 'shield') score += 80;
+      else if (p.type === 'slow') score += 60;
+      else if (p.type === 'doubleShot') score += 30;
+
+      score -= dist * 0.15;
+      score -= danger * 30;
+
+      if (score > bestScore) { bestScore = score; best = { x: p.x, score }; }
+    }
+
+    // Only chase if it's worth it
+    return best && best.score > 10 ? best : null;
+  }
+
+  // ============================================================
+  // SPLIT SAFETY
   // ============================================================
   function isSplitSafe(b) {
-    if (b.tier >= 3) return true; // smallest tier, no split
+    if (b.tier >= 3) return true;
 
     const sc = SCALE;
     const pw = player.w * sc / 2;
@@ -224,24 +219,19 @@
     const childBounceVy = b.bounceVy * 0.7;
     const childTier = b.tier + 1;
     const childR = [45, 32, 22, 14][childTier] * sc;
+    const childBVy = [-9.5, -9, -8.5, -8][childTier] * sc;
 
-    // Simulate both child balls for 20 frames
     const children = [
-      { x: b.x - 10 * sc, y: b.y, vx: -spreadVx, vy: childBounceVy, r: childR, bounceVy: [-9.5, -9, -8.5, -8][childTier] * sc },
-      { x: b.x + 10 * sc, y: b.y, vx: spreadVx, vy: childBounceVy, r: childR, bounceVy: [-9.5, -9, -8.5, -8][childTier] * sc },
+      { x: b.x - 10 * sc, y: b.y, vx: -spreadVx, vy: childBounceVy, r: childR, bounceVy: childBVy },
+      { x: b.x + 10 * sc, y: b.y, vx: spreadVx, vy: childBounceVy, r: childR, bounceVy: childBVy },
     ];
 
-    const groundY = H - BOT_GROUND_H * sc;
     const ph = player.h * sc / 2;
-
     for (const child of children) {
-      const traj = predictBall(child, 15, game.blocks, sc);
+      const traj = predictBall(child, 18, game.blocks, sc);
       for (const pos of traj) {
-        // Check if child ball hits player area
         if (pos.y + childR >= player.y - ph && pos.y - childR <= player.y + ph) {
-          if (Math.abs(pos.x - player.x) < childR + pw + 5) {
-            return false; // Split will hit us
-          }
+          if (Math.abs(pos.x - player.x) < childR + pw + 8) return false;
         }
       }
     }
@@ -258,10 +248,14 @@
     const groundY = H - BOT_GROUND_H * sc;
     const speedValues = [7, 9, 11, 13];
     const shotSpeed = speedValues[upgrades.shotSpeed] * sc;
-    const isCrowded = balls.length >= CROWDED_BALL_COUNT;
+
+    // Scale caution by level and ball count
+    const levelCaution = Math.min(game.level * 0.15, 1.5); // higher levels = more cautious
+    const crowded = balls.length >= 6;
+    const veryCrowded = balls.length >= 9;
+
     const comboActive = game.comboTimer > 0;
-    // When combo is running, heavily prioritize speed of next hit
-    const comboUrgency = comboActive ? Math.min(game.combo * 15, 60) : 0;
+    const comboUrgency = comboActive ? Math.min(game.combo * 12, 50) : 0;
 
     let bestTarget = null;
     let bestScore = -Infinity;
@@ -269,8 +263,10 @@
     for (let i = 0; i < balls.length; i++) {
       const b = balls[i];
 
-      // In crowded mode, only target small balls (don't create more chaos)
-      if (isCrowded && b.tier < 2) continue;
+      // When very crowded, ONLY shoot smallest balls
+      if (veryCrowded && b.tier < 3) continue;
+      // When crowded, avoid big balls
+      if (crowded && b.tier < 2) continue;
 
       const trajectory = predictBall(b, PREDICT_FRAMES, game.blocks, sc);
       const positions = [{ x: b.x, y: b.y, frame: 0 }];
@@ -290,37 +286,30 @@
         const distToTarget = Math.abs(player.x - pos.x);
         const playerSpeed = player.speed * sc;
         const framesNeeded = distToTarget / playerSpeed;
-
         if (shootFrame > 0 && framesNeeded > shootFrame * 1.05) continue;
 
         const posDanger = dangerAt(pos.x, dangerZones, 15);
 
         let score = 100;
-        score -= posDanger * 35;
+        score -= posDanger * (35 + levelCaution * 10); // more cautious at higher levels
         score -= Math.max(0, pos.frame) * 0.5;
         score += (3 - b.tier) * 30;
         score -= framesNeeded * 0.4;
         score -= distToTarget * 0.05;
 
-        // Ball already above us
         if (Math.abs(pos.x - player.x) < SHOOT_TOLERANCE * sc && pos.frame <= 3) {
           score += 80;
         }
-
-        // Mid-height bonus
         if (pos.y > groundY * 0.2 && pos.y < groundY * 0.6) {
           score += 15;
         }
 
-        // === COMBO CHASING ===
-        // When combo is active, massively reward fast kills to keep chain going
+        // Combo chasing
         if (comboActive) {
-          // Bonus for targets we can hit soon (keep the combo alive!)
-          const totalFramesToHit = Math.max(framesNeeded, Math.max(0, shootFrame)) + shotTravelFrames;
-          // comboTimer is 90 frames per hit; we need to hit before it expires
-          if (totalFramesToHit < game.comboTimer) {
-            score += comboUrgency; // big bonus scaled by current combo count
-            score += (90 - totalFramesToHit) * 0.5; // faster = better
+          const totalFrames = Math.max(framesNeeded, Math.max(0, shootFrame)) + shotTravelFrames;
+          if (totalFrames < game.comboTimer) {
+            score += comboUrgency;
+            score += (90 - totalFrames) * 0.4;
           }
         }
 
@@ -334,19 +323,14 @@
     return bestTarget;
   }
 
-  // ============================================================
-  // OPPORTUNISTIC SHOT CHECK
-  // ============================================================
+  // Ball directly above for opportunistic shots
   function ballAbovePlayer() {
     const sc = SCALE;
-    const tolerance = SHOOT_TOLERANCE * sc;
+    const tol = SHOOT_TOLERANCE * sc;
     const groundY = H - BOT_GROUND_H * sc;
-
     for (let i = 0; i < balls.length; i++) {
       const b = balls[i];
-      if (Math.abs(b.x - player.x) < tolerance + b.r * 0.3 && b.y < groundY - 40 * sc) {
-        return b;
-      }
+      if (Math.abs(b.x - player.x) < tol + b.r * 0.3 && b.y < groundY - 40 * sc) return b;
     }
     return null;
   }
@@ -382,46 +366,54 @@
     const directDanger = isInImmediateDanger();
     const invincible = player.invincible > 0;
 
+    // Dynamic danger threshold: more cautious on later levels / low lives
+    const dangerThresh = 0.25 - game.level * 0.01 - (game.lives <= 1 ? 0.08 : 0);
+
     let targetX = player.x;
     let shouldShoot = false;
 
+    // === PRIORITY 0: Collect nearby powerup if safe ===
+    const pu = findBestPowerup(dangerZones);
+
     // === PRIORITY 1: Emergency dodge ===
-    if (!invincible && (directDanger || immDanger > DANGER_THRESHOLD)) {
+    if (!invincible && (directDanger || immDanger > dangerThresh)) {
       targetX = findSafestPosition(player.x, dangerZones, game.blocks, true);
-      // Don't shoot while dodging — survival first
       shouldShoot = false;
 
-    // === PRIORITY 2: Invincible — go aggressive ===
+    // === PRIORITY 2: Grab a good powerup ===
+    } else if (pu && !directDanger) {
+      targetX = pu.x;
+      // Still shoot opportunistically while collecting
+      const above = ballAbovePlayer();
+      if (above && player.shootCooldown <= 0) shouldShoot = true;
+
+    // === PRIORITY 3: Invincible — go aggressive ===
     } else if (invincible && player.invincible > 20) {
       const target = findBestTarget(dangerZones);
       if (target) {
         targetX = target.x;
-        if (Math.abs(player.x - target.x) < SHOOT_TOLERANCE * sc * 1.5) {
-          shouldShoot = true;
-        }
+        if (Math.abs(player.x - target.x) < SHOOT_TOLERANCE * sc * 1.5) shouldShoot = true;
       }
 
-    // === PRIORITY 3: Normal play — target + dodge balance ===
+    // === PRIORITY 4: Normal play ===
     } else {
       const comboActive = game.comboTimer > 0;
       const target = findBestTarget(dangerZones);
       if (target) {
-        // Check if path to target is safe (relax when combo is running)
-        const dangerLimit = comboActive ? DANGER_THRESHOLD * 4 : DANGER_THRESHOLD * 2;
+        const dangerLimit = comboActive ? dangerThresh * 4 : dangerThresh * 2;
         const pathDanger = dangerAt(target.x, dangerZones, 20);
         if (pathDanger < dangerLimit) {
           targetX = target.x;
           if (Math.abs(player.x - target.x) < SHOOT_TOLERANCE * sc) {
             const ball = balls[target.ballIndex];
             if (!ball) {
-              // ball was already popped between target selection and now
+              // already popped
             } else if (ball.tier >= 3) {
-              shouldShoot = true; // smallest, no split
+              shouldShoot = true;
             } else if (isSplitSafe(ball)) {
               shouldShoot = true;
             } else if (comboActive && game.combo >= 3) {
-              // High combo — accept risk to keep it going
-              shouldShoot = true;
+              shouldShoot = true; // accept risk for combo
             }
           }
         } else {
@@ -432,27 +424,21 @@
       }
     }
 
-    // Opportunistic shots: if a ball just happens to be above us, take the shot
+    // Opportunistic shots
     if (!shouldShoot && player.shootCooldown <= 0) {
       const above = ballAbovePlayer();
-      if (above && (invincible || isSplitSafe(above))) {
-        shouldShoot = true;
-      }
+      if (above && (invincible || isSplitSafe(above))) shouldShoot = true;
     }
 
-    // === Apply movement ===
-    const moveThreshold = 2 * sc;
+    // Apply
     const diff = targetX - player.x;
-    keys['ArrowLeft'] = diff < -moveThreshold;
-    keys['ArrowRight'] = diff > moveThreshold;
+    keys['ArrowLeft'] = diff < -2 * sc;
+    keys['ArrowRight'] = diff > 2 * sc;
 
-    // === Apply shooting ===
     if (shouldShoot && player.shootCooldown <= 0) {
       const totalArrows = 1 + upgrades.extraArrows;
       const maxShots = 2 * totalArrows + upgrades.extraAmmo * 2;
-      if (shots.length < maxShots) {
-        shootRequest();
-      }
+      if (shots.length < maxShots) shootRequest();
     }
   }
 
@@ -503,9 +489,12 @@
         break;
 
       case 'win':
-        console.log(`[BOT] WIN! Score: ${game.score}. Restarting...`);
-        menuCooldown = 120;
-        backToMenu();
+        console.log(`[BOT] *** YOU WIN! *** Score: ${game.score}`);
+        // Signal Node.js to take screenshot and stop
+        window.__botWon = true;
+        // Disable further bot actions
+        keys['ArrowLeft'] = false;
+        keys['ArrowRight'] = false;
         break;
 
       case 'paused':
@@ -514,7 +503,7 @@
   }
 
   // ============================================================
-  // UPGRADE SELECTION — always prefer extra ammo
+  // UPGRADE SELECTION
   // ============================================================
   function handleUpgradeSelect() {
     if (typeof upgradeChoices === 'undefined' || upgradeChoices.length === 0) return;
@@ -530,13 +519,10 @@
       }
     }
 
-    // Emergency: if 1 life left, grab extraLife if available
+    // Emergency: grab life if we're low
     if (game.lives <= 1) {
       for (let i = 0; i < upgradeChoices.length; i++) {
-        if (upgradeChoices[i].id === 'extraLife') {
-          bestIndex = i;
-          break;
-        }
+        if (upgradeChoices[i].id === 'extraLife') { bestIndex = i; break; }
       }
     }
 
@@ -550,12 +536,9 @@
   const originalUpdate = window.update;
   window.update = function () {
     originalUpdate();
-    try {
-      botThink();
-    } catch (e) {
-      console.error('[BOT ERROR]', e.message);
-    }
+    if (window.__botWon) return; // stop after winning
+    try { botThink(); } catch (e) { console.error('[BOT ERROR]', e.message); }
   };
 
-  console.log('[BOT] Brainrot Bot v2 activated!');
+  console.log('[BOT] Brainrot Bot v3 activated — playing to win!');
 })();
