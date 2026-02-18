@@ -32,9 +32,21 @@ async function main() {
   await new Promise(r => setTimeout(r, 1500));
 
   // Forward bot console messages
+  let winHandled = false;
   page.on('console', msg => {
     const text = msg.text();
     if (text.includes('[BOT')) console.log(text);
+    if (text.includes('[BOT] WIN!') && !winHandled) {
+      winHandled = true;
+      console.log('\nBot won the game! Taking screenshot...');
+      setTimeout(async () => {
+        const screenshotPath = join(__dirname, '..', 'win-screenshot.png');
+        await page.screenshot({ path: screenshotPath });
+        console.log(`Screenshot saved to: ${screenshotPath}`);
+        await browser.close();
+        process.exit(0);
+      }, 2000);
+    }
   });
 
   console.log('Injecting bot...');
@@ -44,25 +56,7 @@ async function main() {
   console.log('Bot is running! Watch the browser window.');
   console.log('Press Ctrl+C to stop.');
 
-  // Poll for win state — take screenshot and exit
-  const pollWin = setInterval(async () => {
-    try {
-      const won = await page.evaluate(() => window.__botWon);
-      if (won) {
-        clearInterval(pollWin);
-        const path = join(__dirname, '..', 'win-screenshot.png');
-        await new Promise(r => setTimeout(r, 2000)); // let win animation play
-        await page.screenshot({ path, fullPage: false });
-        console.log(`\n[BOT] Screenshot saved to ${path}`);
-        console.log('[BOT] GG! Closing browser...');
-        await browser.close();
-        process.exit(0);
-      }
-    } catch (_) {}
-  }, 1000);
-
   process.on('SIGINT', async () => {
-    clearInterval(pollWin);
     console.log('\nStopping bot...');
     await browser.close();
     process.exit(0);
